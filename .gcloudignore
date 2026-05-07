@@ -1,0 +1,28 @@
+.gcloudignore
+.git
+.gitignore
+
+# Python
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+**/env
+
+# Node
+**/node_modules
+
+# Build artifacts (built during Docker build)
+**/frontend_build
+**/dist
+**/.next
+
+# Dev
+Assignment.md
+.env
+**/.env
+**/.env.local
+
+# IDE
+.vscode
+.idea
