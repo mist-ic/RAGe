@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { Message, UploadResult } from '../types'
+import type { Message } from '../types'
 
 export function useStreamingChat(sessionId: string | null) {
   const [messages, setMessages] = useState<Message[]>([])
