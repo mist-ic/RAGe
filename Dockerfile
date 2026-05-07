@@ -1,10 +1,11 @@
 # ── Stage 1: Build React frontend ──────────────────────────
 FROM node:20-slim AS frontend-builder
 
-WORKDIR /app/frontend
+WORKDIR /build/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+# Vite builds to ../frontend_build (one level up from frontend/)
 RUN npm run build
 
 # ── Stage 2: Python backend + bundled frontend ──────────────
@@ -12,23 +13,24 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for PyMuPDF
+# PyMuPDF ships its own compiled binary -- no system libmupdf needed
+# Only install minimal system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmupdf-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps (cached layer)
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Backend source
 COPY backend/ ./backend/
 
-# Copy built frontend into position for static serving
-COPY --from=frontend-builder /app/frontend_build ./frontend_build
+# Copy built frontend (Vite outputs to frontend_build/ at repo root)
+COPY --from=frontend-builder /build/frontend_build ./frontend_build
 
 # Uploads directory
-RUN mkdir -p uploads
+RUN mkdir -p /app/backend/uploads
 
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
