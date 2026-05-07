@@ -1,0 +1,8 @@
+{
+  "name": "rage-deploy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy:gcloud": "node scripts/write-gcloud-env.mjs && gcloud run deploy rage --source . --region asia-south1 --allow-unauthenticated --env-vars-file .gcloud-env.yaml --quiet"
+  }
+}

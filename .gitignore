@@ -1,0 +1,44 @@
+# Assignment (do not commit)
+Assignment.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Embeddings index
+backend/index/
+
+# Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+.eslintcache
+.vite/
+frontend_build/
+
+# Uploads temp
+backend/uploads/
+
+# GCP
+.gcloud-env.yaml
