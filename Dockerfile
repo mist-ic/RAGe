@@ -34,8 +34,12 @@ RUN mkdir -p /app/backend/uploads
 
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
+# PYTHONPATH points to backend/ so 'from app import ...' resolves to /app/backend/app/
+ENV PYTHONPATH=/app/backend
 
 EXPOSE 8080
 
-CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
+
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

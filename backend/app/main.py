@@ -17,9 +17,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import gemini_client
@@ -334,6 +334,14 @@ async def query_stream(req: QueryRequest):
 
 # ── Static frontend (production) ───────────────────────────
 
-_static_dir = Path(__file__).resolve().parent.parent.parent / "frontend_build"
-if _static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+# In Docker: WORKDIR=/app, frontend_build is at /app/frontend_build
+# In dev: frontend is served by Vite on :5173
+_static_candidates = [
+    Path("/app/frontend_build"),           # Docker / Cloud Run
+    Path(__file__).resolve().parent.parent.parent / "frontend_build",  # local relative
+]
+
+for _candidate in _static_candidates:
+    if _candidate.exists():
+        app.mount("/", StaticFiles(directory=str(_candidate), html=True), name="static")
+        break

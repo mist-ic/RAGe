@@ -9,9 +9,8 @@ Task prefixes per Gemini Embedding 2 docs:
 - Queries:   "task: question answering | query: {question}"
 """
 
-import base64
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 from google import genai
