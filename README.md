@@ -8,9 +8,37 @@ Upload any document and chat with it. Built from scratch with Gemini 3 Flash, Ge
 
 ## What It Does
 
-Upload a PDF or text file. RAGe chunks it, embeds every chunk using Gemini Embedding 2, and stores the vectors in Qdrant. Ask a question -- the system retrieves the most relevant chunks and generates a grounded answer using Gemini 3 Flash that cites exact pages and sections.
+Upload a PDF or text file. RAGe chunks it, embeds every chunk using Gemini Embedding 2, and stores the vectors in Qdrant. Ask a question -- the system retrieves the most relevant chunks, **grades each one for relevance**, decides whether to use retrieved context, fall back to web search, or combine both, then generates a grounded answer using Gemini 3 Flash that cites exact pages and sections.
 
-The LLM is strictly forbidden from using its training knowledge. Every answer comes from your document or the system refuses to answer.
+The LLM is strictly forbidden from using its training knowledge. Every answer comes from your document (or a grounded web search when the document doesn't cover the question).
+
+---
+
+## Corrective RAG (CRAG)
+
+Implements **"Corrective Retrieval Augmented Generation"** (Yan et al., 2024) in [`backend/app/pipeline/evaluator.py`](backend/app/pipeline/evaluator.py).
+
+```
+Retrieve → Grade each chunk → Decide action → [Web search] → Generate
+```
+
+After standard retrieval, each chunk is independently graded by the LLM:
+
+| Label | Meaning |
+|---|---|
+| `correct` | Chunk is relevant to the query -- keep it |
+| `ambiguous` | Partially relevant -- keep, but supplement |
+| `incorrect` | Not relevant -- discard |
+
+The grader's verdict drives one of three actions:
+
+| Action | When | Knowledge source |
+|---|---|---|
+| `use_retrieved` | All/most chunks correct | Retrieved document chunks only |
+| `use_web` | All chunks incorrect | Web search (Gemini `google_search` tool) |
+| `use_both` | Mixed relevance | Kept chunks + web search supplement |
+
+Irrelevant chunks are stripped before generation. The CRAG action, chunk labels, and whether web search fired are all surfaced in the API response and visible in the UI.
 
 ---
 

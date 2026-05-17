@@ -3,10 +3,13 @@ RAGe — FastAPI Application
 
 Routes:
   POST /upload           — Upload PDF/TXT, chunk, embed, index into Qdrant
-  POST /query/stream     — SSE streaming RAG query
-  POST /query            — Non-streaming RAG query
+  POST /query/stream     — SSE streaming RAG query (with Corrective RAG)
+  POST /query            — Non-streaming RAG query (with Corrective RAG)
   GET  /health           — Health check
   GET  /*                — Serve React SPA (production)
+
+Correctve RAG (CRAG) pipeline (Yan et al., 2024):
+  Retrieve → Grade each chunk → Decide action → [Web search] → Generate
 """
 
 import json
@@ -27,9 +30,11 @@ from app.config import get_settings
 from app.memory.conversation import ConversationMemory
 from app.pipeline import embedder, retriever
 from app.pipeline.chunker import chunk_pages
+from app.pipeline.evaluator import CRAGAction, decide_action, evaluate_chunks, web_search
 from app.pipeline.extractor import extract_document
 from app.pipeline.prompt import build_prompt
 from app.schemas import (
+    CRAGMetadata,
     QueryMetadata,
     QueryRequest,
     QueryResponse,
@@ -185,14 +190,22 @@ async def upload_document(file: UploadFile = File(...)):
             pass
 
 
-# ── Shared RAG logic ───────────────────────────────────────
+# ── Shared CRAG pipeline ──────────────────────────────────
 
 def _run_rag(req: QueryRequest) -> tuple:
     """
-    Core RAG pipeline: embed query, retrieve chunks, build prompt.
+    Corrective RAG pipeline (Yan et al., 2024).
+
+    Steps:
+      1. Embed query
+      2. Retrieve candidate chunks from Qdrant
+      3. Grade each chunk with LLM relevance evaluator
+      4. Decide action: USE_RETRIEVED / USE_WEB / USE_BOTH
+      5. Web search if action is USE_WEB or USE_BOTH
+      6. Build grounded prompt with corrected context
 
     Returns:
-        (system_prompt, contents, retrieved_chunks, question)
+        (system_prompt, contents, kept_chunks, question, crag_meta, graded_all)
     """
     settings = get_settings()
 
@@ -205,31 +218,62 @@ def _run_rag(req: QueryRequest) -> tuple:
     # 1. Embed query
     q_embedding = embedder.embed_query(req.question)
 
-    # 2. Retrieve relevant chunks from Qdrant
-    results = retriever.search(
+    # 2. Retrieve candidate chunks from Qdrant
+    raw_results = retriever.search(
         req.session_id,
         q_embedding,
         top_k=settings.TOP_K,
         threshold=settings.SIMILARITY_THRESHOLD,
     )
 
-    # 3. Build grounded prompt
+    # 3. Grade each chunk (CRAG evaluation step)
+    graded = evaluate_chunks(req.question, raw_results)
+
+    # 4. Decide which knowledge source(s) to use
+    action, kept_chunks = decide_action(graded)
+
+    # 5. Web search if needed (USE_WEB or USE_BOTH)
+    web_ctx: str | None = None
+    if action in (CRAGAction.USE_WEB, CRAGAction.USE_BOTH):
+        web_ctx = web_search(req.question)
+
+    # Build label map for prompt annotation
+    graded_labels = {
+        p.get("chunk_id", ""): label.value
+        for p, _s, label, _r in graded
+    }
+
+    # 6. Build grounded prompt with corrected context
     history = None
     if req.conversation_id:
         history = memory.get_history(req.conversation_id)
 
-    system_prompt, contents = build_prompt(results, history)
-    return system_prompt, contents, results, req.question
+    system_prompt, contents = build_prompt(
+        kept_chunks,
+        history=history,
+        web_context=web_ctx,
+        crag_action=action.value,
+        graded_labels=graded_labels,
+    )
+
+    crag_meta = CRAGMetadata(
+        action=action.value,
+        chunks_graded=len(graded),
+        chunks_kept=len(kept_chunks),
+        web_search_used=(web_ctx is not None),
+    )
+
+    return system_prompt, contents, kept_chunks, req.question, crag_meta, graded
 
 
 # ── Non-streaming query ────────────────────────────────────
 
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    """Non-streaming RAG query. Returns full answer JSON."""
+    """Non-streaming RAG query with Corrective RAG. Returns full answer JSON."""
     t_start = time.time()
 
-    system_prompt, contents, results, question = _run_rag(req)
+    system_prompt, contents, kept_chunks, question, crag_meta, graded = _run_rag(req)
     answer = gemini_client.generate(system_prompt, contents, question)
 
     conv_id = req.conversation_id or str(uuid.uuid4())
@@ -238,6 +282,9 @@ async def query(req: QueryRequest):
     latency_ms = int((time.time() - t_start) * 1000)
     settings = get_settings()
 
+    # Build label lookup from graded results
+    label_map = {p.get("chunk_id", ""): lbl.value for p, _s, lbl, _r in graded}
+
     sources = [
         SourceInfo(
             document=p.get("document", ""),
@@ -245,8 +292,9 @@ async def query(req: QueryRequest):
             section=p.get("section"),
             relevance_score=round(s, 4),
             text_preview=p.get("text", "")[:180],
+            crag_label=label_map.get(p.get("chunk_id", "")),
         )
-        for p, s in results
+        for p, s in kept_chunks
     ]
 
     return QueryResponse(
@@ -254,7 +302,8 @@ async def query(req: QueryRequest):
         metadata=QueryMetadata(
             model_used=settings.LLM_MODEL,
             latency_ms=latency_ms,
-            chunks_retrieved=len(results),
+            chunks_retrieved=len(kept_chunks),
+            crag=crag_meta,
         ),
         sources=sources,
         conversation_id=conv_id,
@@ -266,17 +315,17 @@ async def query(req: QueryRequest):
 @app.post("/query/stream")
 async def query_stream(req: QueryRequest):
     """
-    SSE streaming RAG query.
+    SSE streaming RAG query with Corrective RAG.
 
     SSE events:
-      data: {"token": "..."}     — incremental text token
-      data: {"done": true, "metadata": {...}, "sources": [...]}  — final event
-      data: {"error": "..."}     — error event
+      data: {"token": "..."}      — incremental text token
+      data: {"done": true, ...}   — final event with metadata, sources, crag info
+      data: {"error": "..."}      — error event
     """
     settings = get_settings()
 
     try:
-        system_prompt, contents, results, question = _run_rag(req)
+        system_prompt, contents, kept_chunks, question, crag_meta, graded = _run_rag(req)
     except HTTPException as e:
         async def error_gen():
             yield f"data: {json.dumps({'error': e.detail})}\n\n"
@@ -285,6 +334,8 @@ async def query_stream(req: QueryRequest):
     conv_id = req.conversation_id or str(uuid.uuid4())
     t_start = time.time()
 
+    label_map = {p.get("chunk_id", ""): lbl.value for p, _s, lbl, _r in graded}
+
     sources = [
         {
             "document": p.get("document", ""),
@@ -292,8 +343,9 @@ async def query_stream(req: QueryRequest):
             "section": p.get("section"),
             "relevance_score": round(s, 4),
             "text_preview": p.get("text", "")[:180],
+            "crag_label": label_map.get(p.get("chunk_id", "")),
         }
-        for p, s in results
+        for p, s in kept_chunks
     ]
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -311,7 +363,8 @@ async def query_stream(req: QueryRequest):
                 "metadata": {
                     "model_used": settings.LLM_MODEL,
                     "latency_ms": latency_ms,
-                    "chunks_retrieved": len(results),
+                    "chunks_retrieved": len(kept_chunks),
+                    "crag": crag_meta.model_dump(),
                 },
                 "sources": sources,
                 "conversation_id": conv_id,

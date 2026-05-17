@@ -5,7 +5,7 @@ Request/response models for the API.
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 # ── Upload ─────────────────────────────────────────────────
@@ -35,6 +35,15 @@ class SourceInfo(BaseModel):
     section: Optional[str] = None
     relevance_score: float
     text_preview: str = ""
+    crag_label: Optional[str] = None    # correct / incorrect / ambiguous
+
+
+class CRAGMetadata(BaseModel):
+    """Corrective RAG step metadata."""
+    action: str                         # use_retrieved / use_web / use_both
+    chunks_graded: int
+    chunks_kept: int
+    web_search_used: bool
 
 
 class QueryMetadata(BaseModel):
@@ -42,6 +51,7 @@ class QueryMetadata(BaseModel):
     model_used: str
     latency_ms: int
     chunks_retrieved: int
+    crag: Optional[CRAGMetadata] = None
 
 
 class QueryResponse(BaseModel):
